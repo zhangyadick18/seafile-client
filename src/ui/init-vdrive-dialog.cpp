@@ -1,0 +1,160 @@
+#include <stdio.h>
+#include <QtGui>
+#include <QTimer>
+
+#include "seafile-applet.h"
+#include "configurator.h"
+#include "rpc/rpc-client.h"
+#include "rpc/local-repo.h"
+
+#include "init-vdrive-dialog.h"
+
+namespace {
+
+const int kCheckDownloadInterval = 2000;
+
+} // namespace
+
+
+InitVirtualDriveDialog::InitVirtualDriveDialog(const Account& account, QWidget *parent)
+    : QDialog(parent),
+      account_(account)
+{
+    setupUi(this);
+    setWindowTitle(tr("Seafile Initialization"));
+    setWindowIcon(QIcon(":/images/seafile.png"));
+    createLoadingView();
+
+    get_default_repo_req_ = NULL;
+    download_default_repo_req_ = NULL;
+    check_download_timer_ = NULL;
+
+
+    getDefaultRepo();
+}
+
+void InitVirtualDriveDialog::createLoadingView()
+{
+    QVBoxLayout *layout = new QVBoxLayout;
+    mLoadingView->setLayout(layout);
+
+    QMovie *gif = new QMovie(":/images/loading.gif");
+    QLabel *label = new QLabel;
+    label->setMovie(gif);
+    label->setAlignment(Qt::AlignCenter);
+    gif->start();
+
+    layout->addWidget(label);
+}
+
+void InitVirtualDriveDialog::setStatusText(const QString& status)
+{
+    mStatusText->setText(status);
+}
+
+void InitVirtualDriveDialog::getDefaultRepo()
+{
+    setStatusText(tr("Checking your default library..."));
+    get_default_repo_req_ = new GetDefaultRepoRequest(account_);
+
+    connect(get_default_repo_req_, SIGNAL(success(const QString&)),
+            this, SLOT(onGetDefaultRepoSuccess(const QString&)));
+
+    connect(get_default_repo_req_, SIGNAL(failed(int)),
+            this, SLOT(onGetDefaultRepoFailure(int)));
+
+    get_default_repo_req_->send();
+}
+
+void InitVirtualDriveDialog::setVDrive(const LocalRepo& repo)
+{
+    setStatusText(tr("updating default libray..."));
+    seafApplet->configurator()->setVirtualDrive(repo.worktree);
+}
+
+void InitVirtualDriveDialog::onGetDefaultRepoSuccess(const QString& repo_id)
+{
+    default_repo_id_ = repo_id;
+
+    LocalRepo repo;
+
+    seafApplet->rpcClient()->getLocalRepo(repo_id, &repo);
+    if (repo.isValid()) {
+        // This repo is already here
+        printf("default repo is already downloaded\n");
+        setVDrive(repo);
+        return;
+    }
+
+    download_default_repo_req_ = new DownloadRepoRequest(account_, repo_id);
+
+    connect(download_default_repo_req_, SIGNAL(success(const RepoDownloadInfo&)),
+            this, SLOT(onDownloadRepoSuccess(const RepoDownloadInfo&)));
+
+    connect(download_default_repo_req_, SIGNAL(failed(int)),
+            this, SLOT(onDownloadRepoFailure(int)));
+
+    download_default_repo_req_->send();
+}
+
+void InitVirtualDriveDialog::onGetDefaultRepoFailure(int code)
+{
+    fail(tr("Failed to get default library: error code %1").arg(code));
+}
+
+void InitVirtualDriveDialog::onDownloadRepoSuccess(const RepoDownloadInfo& info)
+{
+    int ret;
+    QDir worktree = seafApplet->configurator()->worktreeDir();
+    QString default_repo_path = worktree.filePath(tr("Default Library"));
+    QString error;
+
+    if (!worktree.mkpath(tr("Default Library"))) {
+        fail(tr("Failed to create folder \"%1\"").arg(default_repo_path));
+        return;
+    }
+
+    default_repo_info_ = info;
+    ret = seafApplet->rpcClient()->cloneRepo(info.repo_id, info.relay_id,
+                                             info.repo_name, default_repo_path,
+                                             info.token, QString(),
+                                             info.magic, info.relay_addr,
+                                             info.relay_port, info.email,
+                                             info.random_key, info.enc_version,
+                                             &error);
+
+    if (ret < 0) {
+        fail(tr("Failed to download default library:\n %1").arg(error));
+    } else {
+        check_download_timer_ = new QTimer(this);
+        connect(check_download_timer_, SIGNAL(timeout()), this, SLOT(checkDownloadProgress()));
+        check_download_timer_->start(kCheckDownloadInterval);
+
+        setStatusText(tr("downloading default library..."));
+    }
+}
+
+void InitVirtualDriveDialog::checkDownloadProgress()
+{
+    LocalRepo repo;
+    seafApplet->rpcClient()->getLocalRepo(default_repo_id_, &repo);
+    if (!repo.isValid()) {
+        return;
+    }
+
+    check_download_timer_->stop();
+    setStatusText(tr("downloading default library... done"));
+
+    setVDrive(repo);
+}
+
+void InitVirtualDriveDialog::fail(const QString& reason)
+{
+    seafApplet->warningBox(reason);
+    reject();
+}
+
+void InitVirtualDriveDialog::onDownloadRepoFailure(int code)
+{
+    fail(tr("Failed to download default library: error code %1").arg(code));
+}

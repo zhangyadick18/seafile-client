@@ -21,7 +21,9 @@
 #include "ui/tray-icon.h"
 #include "ui/settings-dialog.h"
 #include "ui/welcome-dialog.h"
+#include "ui/init-vdrive-dialog.h"
 #include "ui/login-dialog.h"
+
 #include "seafile-applet.h"
 
 namespace {
@@ -59,6 +61,7 @@ SeafileApplet::SeafileApplet()
       message_listener_(new MessageListener),
       settings_dialog_(new SettingsDialog),
       settings_mgr_(new SettingsManager),
+      first_login_ok_(false),
       started_(false),
       in_exit_(false)
 {
@@ -87,7 +90,9 @@ void SeafileApplet::start()
         // WelcomeDialog welcome_dialog;
         // welcome_dialog.exec();
         LoginDialog login_dialog;
-        login_dialog.exec();
+        if (login_dialog.exec() == QDialog::Accepted) {
+            first_login_ok_ = true;
+        }
     }
 
     daemon_mgr_->startCcnetDaemon();
@@ -112,6 +117,13 @@ void SeafileApplet::onDaemonStarted()
     seafApplet->settingsManager()->loadSettings();
 
     started_ = true;
+
+    // if (first_login_ok_ && account_mgr_->accounts().size() > 0) {
+    if (account_mgr_->accounts().size() > 0) {
+        const Account& account = account_mgr_->accounts()[0];
+        InitVirtualDriveDialog dialog(account);
+        dialog.exec();
+    }
 }
 
 void SeafileApplet::exit(int code)
@@ -129,6 +141,10 @@ void SeafileApplet::exit(int code)
 
 void SeafileApplet::errorAndExit(const QString& error)
 {
+    if (in_exit_) {
+        return;
+    }
+
     in_exit_ = true;
     QMessageBox::warning(main_win_, tr(SEAFILE_CLIENT_BRAND), error, QMessageBox::Ok);
     this->exit(1);
@@ -175,4 +191,14 @@ void SeafileApplet::refreshQss()
     loadQss(":/qt-mac.css");
     loadQss("qt-mac.css");
 #endif
+}
+
+void SeafileApplet::warningBox(const QString& msg)
+{
+    QMessageBox::warning(main_win_, tr(SEAFILE_CLIENT_BRAND), msg, QMessageBox::Ok);
+}
+
+void SeafileApplet::messageBox(const QString& msg)
+{
+    QMessageBox::information(main_win_, tr(SEAFILE_CLIENT_BRAND), msg, QMessageBox::Ok);
 }
